@@ -158,7 +158,7 @@ function Expand-CCMCimProperty
                     }
                 }
             }
-        }        
+        }
 
         $newCIMInstanceObject = Get-CCMSubCIMInstances -cimInstanceProperties $cimInstanceProperties
         $cimResults += New-CimInstance -ClassName "$($cimInstance.CIMInstance)" `
@@ -206,7 +206,7 @@ function Get-CCMSubCIMInstances
                                                              -Property $curSubCim -ClientOnly
                         $entryValues += $curSubCimInstance
                     }
-                    
+
                     $newSubCim.Add($subkey, [CIMInstance[]]$entryValues)
                 }
                 elseif ($subKey -ne 'CIMInstance')
@@ -290,7 +290,11 @@ function Test-CCMConfiguration
 
         [Parameter()]
         [System.String]
-        $ModuleName
+        $ModuleName,
+
+        [Parameter()]
+        [system.switch]
+        $Batch
     )
     $TestResult = $true
     $Global:CCMAllDrifts = @()
@@ -311,13 +315,8 @@ function Test-CCMConfiguration
         $ResourceName = $instance.ResourceName
         $ResourceInstanceName = $instance.ResourceInstanceName
 
-        if ($Global:CCMCurrentImportedModule -ne $ResourceName)
-        {
-            $ModulePath = (Get-Module $ModuleName -ListAvailable).ModuleBase
-            $ResourcePath = Join-Path -Path $ModulePath -ChildPath "/DSCResources/MSFT_$ResourceName/MSFT_$ResourceName.psm1"
-            Import-Module $ResourcePath -Force
-            $Global:CCMCurrentImportedModule = $ResourceName
-        }
+        $ModulePath = (Get-Module $ModuleName -ListAvailable).ModuleBase
+        $ResourcePath = Join-Path -Path $ModulePath -ChildPath "/DSCResources/MSFT_$ResourceName/MSFT_$ResourceName.psm1"
 
         Write-Verbose -Message "[Test-CCMConfiguration]: Resource [$i/$($resourceInstances.Length)]"
 
@@ -331,7 +330,24 @@ function Test-CCMConfiguration
 
         # Evaluate the properties of the current resource.
         Write-Verbose -Message "[Test-CCMConfiguration]: Calling Test-TargetResource for {$ResourceInstanceName}"
-        $currentResult = Test-TargetResource @propertiesToSend
+        if ($Batch)
+        {
+            $currentResult = Start-Job -ScriptBlock {
+                    Import-Module $using:ResourcePath | Out-Null
+                    Test-TargetResource @using:propertiesToSend
+                } | Wait-Job | Receive-Job
+        }
+        else
+        {
+            if ($Global:CCMCurrentImportedModule -ne $ResourceName)
+            {
+                Import-Module $ResourcePath -Force
+                $Global:CCMCurrentImportedModule = $ResourceName
+            }
+
+            $currentResult = Test-TargetResource @propertiesToSend
+        }
+
         Write-Verbose -Message "[Test-CCMConfiguration]: Test-TargetResource for {$ResourceInstanceName} returned {$currentResult}"
 
         # If a drift was detected, augment its related info with the name of the
@@ -381,7 +397,11 @@ function Start-CCMConfiguration
 
         [Parameter()]
         [System.String]
-        $ModuleName
+        $ModuleName,
+
+        [Parameter()]
+        [system.switch]
+        $Batch
     )
 
     # Parse the content of the content of the configuration file into an array of PowerShell object.
@@ -402,9 +422,28 @@ function Start-CCMConfiguration
         $propertiesToSend = Get-CCMPropertiesToSend -Instance $instance `
             -Parameters $Parameters
 
+        $ModulePath = (Get-Module $ModuleName -ListAvailable).ModuleBase
+        $ResourcePath = Join-Path -Path $ModulePath -ChildPath "/DSCResources/MSFT_$ResourceName/MSFT_$ResourceName.psm1"
+
         # Evaluate the properties of the current resource.
         Write-Verbose -Message "[Start-CCMConfiguration]: Calling Test-TargetResource for {$ResourceInstanceName}"
-        $currentResult = Test-TargetResource @propertiesToSend
+        if ($Batch)
+        {
+            $currentResult = Start-Job -ScriptBlock {
+                Import-Module $using:ResourcePath | Out-Null
+                Test-TargetResource @using:propertiesToSend
+            } | Wait-Job | Receive-Job
+        }
+        else
+        {
+            if ($Global:CCMCurrentImportedModule -ne $ResourceName)
+            {
+                Import-Module $ResourcePath -Force
+                $Global:CCMCurrentImportedModule = $ResourceName
+            }
+            $currentResult = Test-TargetResource @propertiesToSend
+        }
+
         Write-Verbose -Message "[Start-CCMConfiguration]: Test-TargetResource for {$ResourceInstanceName} returned {$currentResult}"
 
         # If a drift was detected, apply the defined configuration for the resource instance by
@@ -412,7 +451,23 @@ function Start-CCMConfiguration
         if (-not $currentResult)
         {
             Write-Verbose -Message "[Start-CCMConfiguration]: Calling Set-TargetResource for {$ResourceInstanceName}"
-            Set-TargetResource @propertiesToSend
+            if ($Batch)
+            {
+                Start-Job -ScriptBlock {
+                    Import-Module $using:ResourcePath | Out-Null
+                    Set-TargetResource @using:propertiesToSend
+                } | Wait-Job | Receive-Job
+            }
+            else
+            {
+                if ($Global:CCMCurrentImportedModule -ne $ResourceName)
+                {
+                    Import-Module $ResourcePath -Force
+                    $Global:CCMCurrentImportedModule = $ResourceName
+                }
+                Set-TargetResource @propertiesToSend
+            }
+                Set-TargetResource @propertiesToSend
             Write-Verbose -Message "[Start-CCMConfiguration]: Configuration applied successfully for {$ResourceInstanceName}"
         }
         $i++
